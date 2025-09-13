@@ -1,0 +1,36 @@
+{
+  "plans": [
+    {
+      "id": 1,
+      "name": "Basic",
+      "price": 10,
+      "features": [
+        "Feature A",
+        "Feature B"
+      ],
+      "dataQuota": 100
+    },
+    {
+      "id": 2,
+      "name": "Premium",
+      "price": 20,
+      "features": [
+        "Feature A",
+        "Feature B",
+        "Feature C"
+      ],
+      "dataQuota": 500
+    }
+  ],
+  "subscriptions": [],
+  "users": [
+    {
+      "id": 1,
+      "name": "Alice"
+    },
+    {
+      "id": 2,
+      "name": "Bob"
+    }
+  ]
+}
