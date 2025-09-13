@@ -20,24 +20,21 @@ router.get("/plans", async (req, res) => {
 router.post("/subscribe/:planId", async (req, res) => {
   try {
     const { planId } = req.params;
-    const { userId } = req.body; // Normally comes from auth middleware
+    const { userId } = req.body; // normally from auth
 
     const plan = await Plan.findById(planId);
     if (!plan) return res.status(404).json({ message: "Plan not found" });
-    if (!plan.isActive) return res.status(400).json({ message: "This plan is inactive. Please choose another plan." });
+    if (!plan.isActive) return res.status(400).json({ message: "This plan is inactive" });
 
-    // Expire old subscriptions of the same user
-    await Subscription.updateMany(
-      { userId, isActive: true },
-      { $set: { isActive: false } }
-    );
+    // Expire old subscriptions
+    await Subscription.updateMany({ userId, isActive: true }, { $set: { isActive: false } });
 
     const endDate = new Date();
     endDate.setDate(endDate.getDate() + plan.durationDays);
 
     const subscription = await Subscription.create({
       userId,
-      planId: plan._id,
+      planId,
       startDate: new Date(),
       endDate,
       isActive: true
@@ -49,32 +46,69 @@ router.post("/subscribe/:planId", async (req, res) => {
   }
 });
 
-// ----- Get current user subscription -----
-router.get("/my-subscription/:userId", async (req, res) => {
+// ----- Upgrade subscription -----
+router.put("/upgrade-subscription/:id/:newPlanId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { id, newPlanId } = req.params;
 
-    // Auto-expire check before returning
-    await Subscription.updateMany(
-      { userId, endDate: { $lt: new Date() }, isActive: true },
-      { $set: { isActive: false } }
-    );
+    const subscription = await Subscription.findById(id);
+    if (!subscription) return res.status(404).json({ message: "Subscription not found" });
 
-    const subscription = await Subscription.findOne({ userId, isActive: true })
-      .populate("planId");
+    const newPlan = await Plan.findById(newPlanId);
+    if (!newPlan) return res.status(404).json({ message: "New plan not found" });
+    if (!newPlan.isActive) return res.status(400).json({ message: "New plan is inactive" });
 
-    res.json(subscription);
+    // Switch plan (upgrade)
+    const newEndDate = new Date();
+    newEndDate.setDate(newEndDate.getDate() + newPlan.durationDays);
+
+    subscription.planId = newPlan._id;
+    subscription.startDate = new Date();
+    subscription.endDate = newEndDate;
+    subscription.isActive = true;
+
+    await subscription.save();
+
+    res.json({ message: "Subscription upgraded", subscription });
   } catch (err) {
-    res.status(500).json({ message: "Error fetching subscription", error: err.message });
+    res.status(500).json({ message: "Error upgrading subscription", error: err.message });
+  }
+});
+
+// ----- Downgrade subscription -----
+router.put("/downgrade-subscription/:id/:newPlanId", async (req, res) => {
+  try {
+    const { id, newPlanId } = req.params;
+
+    const subscription = await Subscription.findById(id);
+    if (!subscription) return res.status(404).json({ message: "Subscription not found" });
+
+    const newPlan = await Plan.findById(newPlanId);
+    if (!newPlan) return res.status(404).json({ message: "New plan not found" });
+    if (!newPlan.isActive) return res.status(400).json({ message: "New plan is inactive" });
+
+    // Switch plan (downgrade)
+    const newEndDate = new Date();
+    newEndDate.setDate(newEndDate.getDate() + newPlan.durationDays);
+
+    subscription.planId = newPlan._id;
+    subscription.startDate = new Date();
+    subscription.endDate = newEndDate;
+    subscription.isActive = true;
+
+    await subscription.save();
+
+    res.json({ message: "Subscription downgraded", subscription });
+  } catch (err) {
+    res.status(500).json({ message: "Error downgrading subscription", error: err.message });
   }
 });
 
 // ----- Cancel subscription -----
 router.put("/cancel-subscription/:id", async (req, res) => {
   try {
-    const { id } = req.params;
     const subscription = await Subscription.findByIdAndUpdate(
-      id,
+      req.params.id,
       { isActive: false, endDate: new Date() },
       { new: true }
     );
@@ -89,8 +123,7 @@ router.put("/cancel-subscription/:id", async (req, res) => {
 // ----- Renew subscription -----
 router.put("/renew-subscription/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-    const subscription = await Subscription.findById(id).populate("planId");
+    const subscription = await Subscription.findById(req.params.id).populate("planId");
     if (!subscription) return res.status(404).json({ message: "Subscription not found" });
 
     const newEndDate = new Date();
