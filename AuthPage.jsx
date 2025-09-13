@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Mail, Lock, User, Phone, Shield, Eye, EyeOff, Building2, CheckCircle, Users, Zap } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+
 
 function AuthPage() {
   const [role, setRole] = useState("user");   // "user" or "admin"
@@ -23,10 +25,56 @@ function AuthPage() {
     });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log("Form submitted:", { role, mode, formData });
+
+    let payload = { email: formData.email, password: formData.password };
+
+    if (role === "admin" && mode === "signup") {
+      payload = {
+        name: formData.fullName,
+        phone: formData.phone,
+        email: formData.email,
+        password: formData.password,
+        department: formData.department
+      };
+    } else if (role === "user" && mode === "signup") {
+      payload = {
+        username: formData.fullName,
+        phone: formData.phone,
+        email: formData.email,
+        password: formData.password
+      };
+    }
+
+    console.log("Final Payload:", payload);
+
+    const url =
+      mode === "login"
+        ? `/api/${role}/login`
+        : `/api/${role}/register`;
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      console.log("Server Response:", data);
+
+      if (res.ok) {
+        alert(`${mode === "login" ? "Login" : "Signup"} successful!`);
+      } else {
+        alert(data.message || "Something went wrong");
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      alert("Failed to connect to server");
+    }
   };
+
 
   return (
     <div className="min-h-screen flex">
@@ -314,37 +362,7 @@ function AuthPage() {
                 </div>
               </div>
 
-              {/* Confirm Password for Signup */}
-              {mode === "signup" && (
-                <div className="relative group">
-                  <label className="block text-sm font-bold text-slate-700 mb-4 flex items-center">
-                    <div className="w-3 h-3 bg-gradient-to-r from-pink-500 to-rose-500 rounded-full mr-3 group-hover:animate-pulse"></div>
-                    Confirm Password
-                  </label>
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-gradient-to-r from-pink-500/10 to-rose-500/10 rounded-2xl blur group-focus-within:blur-md transition-all duration-300"></div>
-                    <Lock className="absolute left-5 top-1/2 transform -translate-y-1/2 text-gray-400 w-6 h-6 group-focus-within:text-pink-600 transition-all duration-300 z-10" />
-                    <input
-                      type={showConfirmPassword ? "text" : "password"}
-                      name="confirmPassword"
-                      placeholder="Confirm your password"
-                      value={formData.confirmPassword}
-                      onChange={handleInputChange}
-                      className="relative w-full bg-gradient-to-r from-gray-50/80 to-pink-50/50 border-3 border-gray-200/70 text-gray-900 pl-16 pr-16 py-5 rounded-2xl focus:outline-none focus:ring-0 focus:border-pink-500 focus:bg-white/90 transition-all duration-300 shadow-lg hover:shadow-xl backdrop-blur-sm text-lg font-medium placeholder-gray-400"
-                      required
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className="absolute right-5 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-pink-600 transition-all duration-300 p-2 rounded-full hover:bg-pink-50 z-10"
-                    >
-                      {showConfirmPassword ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}
-                    </button>
-                    <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-transparent via-white/5 to-transparent pointer-events-none"></div>
-                  </div>
-                </div>
-              )}
-
+              
               {/* Ultra Premium Submit Button */}
               <div className="relative mt-12">
                 <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl blur-lg opacity-75 hover:opacity-100 transition-opacity duration-300"></div>
