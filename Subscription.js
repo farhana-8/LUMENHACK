@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-
+//sub
 const subscriptionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   plan: { type: String, enum: ["free", "basic", "premium", "student"], default: "free" },
