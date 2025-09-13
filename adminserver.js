@@ -9,10 +9,15 @@ app.use(express.json());
 const readDatabase = () => {
   try {
     const data = fs.readFileSync('db.json');
-    return JSON.parse(data);
+    const db = JSON.parse(data);
+    // Ensure the discounts array exists
+    if (!db.discounts) {
+      db.discounts = [];
+    }
+    return db;
   } catch (error) {
     console.error("Error reading db.json:", error);
-    return { plans: [], users: [], subscriptions: [] };
+    return { plans: [], users: [], subscriptions: [], discounts: [] };
   }
 };
 
@@ -78,15 +83,69 @@ app.delete('/api/plans/:id', (req, res) => {
   res.status(204).send();
 });
 
+// Discount Management Endpoints
+// Create a new discount
+app.post('/api/discounts', (req, res) => {
+  const db = readDatabase();
+  const newDiscount = {
+    id: db.discounts.length > 0 ? Math.max(...db.discounts.map(d => d.id)) + 1 : 1,
+    ...req.body
+  };
+  db.discounts.push(newDiscount);
+  writeDatabase(db);
+  res.status(201).json(newDiscount);
+});
+
+// Get all discounts
+app.get('/api/discounts', (req, res) => {
+  const db = readDatabase();
+  res.json(db.discounts);
+});
+
+// Get a single discount
+app.get('/api/discounts/:id', (req, res) => {
+  const db = readDatabase();
+  const discount = db.discounts.find(d => d.id === parseInt(req.params.id));
+  if (!discount) {
+    return res.status(404).send('Discount not found');
+  }
+  res.json(discount);
+});
+
+// Update a discount
+app.put('/api/discounts/:id', (req, res) => {
+  const db = readDatabase();
+  const discountIndex = db.discounts.findIndex(d => d.id === parseInt(req.params.id));
+  if (discountIndex === -1) {
+    return res.status(404).send('Discount not found');
+  }
+  const updatedDiscount = { ...db.discounts[discountIndex], ...req.body };
+  db.discounts[discountIndex] = updatedDiscount;
+  writeDatabase(db);
+  res.json(updatedDiscount);
+});
+
+// Delete a discount
+app.delete('/api/discounts/:id', (req, res) => {
+  const db = readDatabase();
+  const discountIndex = db.discounts.findIndex(d => d.id === parseInt(req.params.id));
+  if (discountIndex === -1) {
+    return res.status(404).send('Discount not found');
+  }
+  db.discounts.splice(discountIndex, 1);
+  writeDatabase(db);
+  res.status(204).send();
+});
+
 // Get all users for testing
 app.get('/api/users', (req, res) => {
     const db = readDatabase();
     res.json(db.users);
 });
 
-// Subscribe a user to a plan
+// Subscribe a user to a plan with an optional discount
 app.post('/api/subscriptions', (req, res) => {
-  const { userId, planId } = req.body;
+  const { userId, planId, discountCode } = req.body;
   const db = readDatabase();
 
   // Check if user and plan exist
@@ -103,12 +162,28 @@ app.post('/api/subscriptions', (req, res) => {
     return res.status(400).send('User is already subscribed to a plan. Please update or cancel the existing one.');
   }
 
+  let finalPrice = plan.price;
+  let appliedDiscount = null;
+
+  // Apply discount if a code is provided
+  if (discountCode) {
+    const discount = db.discounts.find(d => d.code === discountCode && d.active);
+    if (discount) {
+      finalPrice = plan.price * (1 - discount.percentage / 100);
+      appliedDiscount = discount.code;
+    } else {
+      return res.status(400).send('Invalid or inactive discount code.');
+    }
+  }
+
   const newSubscription = {
     id: db.subscriptions.length > 0 ? Math.max(...db.subscriptions.map(s => s.id)) + 1 : 1,
     userId,
     planId,
     startDate: new Date().toISOString(),
-    status: 'active'
+    status: 'active',
+    finalPrice,
+    appliedDiscount
   };
 
   db.subscriptions.push(newSubscription);
@@ -167,3 +242,4 @@ app.get('/api/analytics/topplans', (req, res) => {
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
+
