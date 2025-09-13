@@ -1,0 +1,7 @@
+npm create vite@latest 
+npm install -D tailwindcss@3.3.3 postcss@8 autoprefixer@10
+npx tailwindcss init -p
+
+
+npm install react-router-dom recharts
+npm install framer-motion
