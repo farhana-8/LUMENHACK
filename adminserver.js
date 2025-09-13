@@ -8,7 +8,7 @@ app.use(express.json());
 
 // MongoDB Connection String
 const mongoUri = 'mongodb+srv://TeamLumen:Lumen12345@cluster0.02bnupq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
-
+//connect
 // Connect to MongoDB
 mongoose.connect(mongoUri)
   .then(() => {
