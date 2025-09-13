@@ -2,47 +2,26 @@ import express from "express";
 import { z } from "zod";
 import dotenv from "dotenv";
 import { v4 as uuid } from "uuid";
-import mongoose from "mongoose";
 
 dotenv.config();
-
-// ---- config ----
-const PORT = Number(process.env.PORT) || 8000;
+const PORT = process.env.PORT || 8000;
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_me_admin_key";
-const MONGO_URI = process.env.MONGO_URI || ""; // set this in .env
 
-// ---- optional DB connect (app still works in-memory if MONGO_URI is missing) ----
-async function connectDB() {
-  if (!MONGO_URI) {
-    console.warn("MONGO_URI not set. Running in in-memory mode only.");
-    return;
-  }
-  try {
-    await mongoose.connect(MONGO_URI);
-    console.log("MongoDB connected.");
-  } catch (err: any) {
-    console.error("MongoDB connection failed:", err?.message || err);
-    process.exit(1);
-  }
-}
-
-// ---- app setup ----
 const app = express();
 app.use(express.json());
-
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// ---- in-memory stores (authoritative for now) ----
-const users = new Map<string, any>();
-const plans = new Map<string, any>();
-const subs = new Map<string, any>();
-const usage = new Map<string, any[]>(); // subscriptionId -> [{periodStart, periodEnd, usedGb}]
-const discounts: any[] = [];
-const notifications: any[] = [];
-const auditEvents: any[] = [];
-const tickets: any[] = [];
+// ---- in-memory stores ----
+const users = new Map();
+const plans = new Map();
+const subs = new Map();
+const usage = new Map();
+const discounts = [];
+const notifications = [];
+const auditEvents = [];
+const tickets = [];
 
-// ---- seed ----
+// seed
 (function seed() {
   const now = new Date().toISOString();
   const u1 = { id: uuid(), email: "user@sms.com", name: "Demo User", phone: "9999999999", createdAt: now };
@@ -50,9 +29,9 @@ const tickets: any[] = [];
   users.set(u1.email, u1);
   users.set(admin.email, admin);
 
-  plans.set("p1", { id: "p1", name: "Basic Fibernet", speedMbps: 50,  quotaGb: 100,  priceMinor: 29900, currency: "INR", features: ["Email support"],   status: "ACTIVE" });
-  plans.set("p2", { id: "p2", name: "Standard Fibernet", speedMbps: 100, quotaGb: 500,  priceMinor: 49900, currency: "INR", features: ["Priority support"], status: "ACTIVE" });
-  plans.set("p3", { id: "p3", name: "Premium Fibernet", speedMbps: 300, quotaGb: 1000, priceMinor: 79900, currency: "INR", features: ["24x7 support"],     status: "ACTIVE" });
+  plans.set("p1", { id: "p1", name: "Basic Fibernet", speedMbps: 50, quotaGb: 100, priceMinor: 29900, currency: "INR", features: ["Email support"], status: "ACTIVE" });
+  plans.set("p2", { id: "p2", name: "Standard Fibernet", speedMbps: 100, quotaGb: 500, priceMinor: 49900, currency: "INR", features: ["Priority support"], status: "ACTIVE" });
+  plans.set("p3", { id: "p3", name: "Premium Fibernet", speedMbps: 300, quotaGb: 1000, priceMinor: 79900, currency: "INR", features: ["24x7 support"], status: "ACTIVE" });
 
   discounts.push({ id: uuid(), name: "Festival 10%", type: "PERCENT", value: 10, active: true, conditions: { planIds: ["p2"] } });
 
@@ -61,450 +40,192 @@ const tickets: any[] = [];
   usage.set(s1.id, [{ periodStart: new Date(new Date().getFullYear(), new Date().getMonth(), 1), periodEnd: new Date(), usedGb: 82 }]);
 })();
 
-// ---- utils ----
-const money = (m: number, c = "INR") => {
-  const symbol = c === "INR" ? "₹" : "";
-  return `${symbol}${(m / 100).toFixed(2)}`;
-};
-
-const err = (code: string, message: string, hint = "") => ({ error: { code, message, hint } });
-
-const wrap =
-  (fn: any) =>
-  (req: express.Request, res: express.Response) =>
-    Promise.resolve(fn(req, res)).catch((e: any) => {
-      console.error(e);
-      res.status(500).json(err("INTERNAL_ERROR", "Something went wrong"));
-    });
-
-const requireAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) =>
-  String(req.headers["x-admin-key"]) === ADMIN_KEY ? next() : res.status(403).json(err("FORBIDDEN", "Invalid ADMIN_KEY"));
-
-const loadUser = (req: any, res: express.Response, next: express.NextFunction) => {
+// utils
+const money = (m, c = "INR") => `${c === "INR" ? "₹" : ""}${(m / 100).toFixed(2)}`;
+const err = (code, message, hint = "") => ({ error: { code, message, hint } });
+const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console.error(e); res.status(500).json(err("INTERNAL_ERROR","Something went wrong")); });
+const requireAdmin = (req, res, next) => (String(req.headers["x-admin-key"]) === ADMIN_KEY) ? next() : res.status(403).json(err("FORBIDDEN","Invalid ADMIN_KEY"));
+const loadUser = (req, res, next) => {
   const email = (req.headers["x-user-email"] || req.query.email || req.body.email || "").toString();
-  if (!email) return res.status(400).json(err("BAD_REQUEST", "Email required"));
+  if (!email) return res.status(400).json(err("BAD_REQUEST","Email required"));
   const u = users.get(email);
-  if (!u) return res.status(404).json(err("NOT_FOUND", "User not found"));
-  req.user = u;
-  next();
+  if (!u) return res.status(404).json(err("NOT_FOUND","User not found"));
+  req.user = u; next();
 };
 
-// ---- schemas ----
+// schemas
 const signupSchema = z.object({ email: z.string().email(), phone: z.string().min(7).max(20).optional(), name: z.string().optional() });
 const loginSchema = z.object({ email: z.string().email() });
-const createPlanSchema = z.object({
-  id: z.string().optional(),
-  name: z.string(),
-  speedMbps: z.number().int().positive(),
-  quotaGb: z.number().int().positive(),
-  priceMinor: z.number().int().positive(),
-  currency: z.string().default("INR"),
-  features: z.array(z.string()).default([]),
-  status: z.enum(["ACTIVE", "HIDDEN", "RETIRED"]).default("ACTIVE"),
-});
+const createPlanSchema = z.object({ id: z.string().optional(), name: z.string(), speedMbps: z.number().int().positive(), quotaGb: z.number().int().positive(), priceMinor: z.number().int().positive(), currency: z.string().default("INR"), features: z.array(z.string()).default([]), status: z.enum(["ACTIVE","HIDDEN","RETIRED"]).default("ACTIVE") });
 const updatePlanSchema = createPlanSchema.partial();
 const subscribeSchema = z.object({ planId: z.string(), autoRenew: z.boolean().default(true) });
-const changeSchema = z.object({ action: z.enum(["upgrade", "downgrade", "cancel", "renew"]), toPlanId: z.string().optional() });
-const discountCreateSchema = z.object({
-  name: z.string(),
-  type: z.enum(["PERCENT", "FLAT"]),
-  value: z.number().int().positive(),
-  active: z.boolean().default(true),
-  conditions: z.any().default({}),
-  planId: z.string().optional(),
-});
+const changeSchema = z.object({ action: z.enum(["upgrade","downgrade","cancel","renew"]), toPlanId: z.string().optional() });
+const discountCreateSchema = z.object({ name: z.string(), type: z.enum(["PERCENT","FLAT"]), value: z.number().int().positive(), active: z.boolean().default(true), conditions: z.any().default({}), planId: z.string().optional() });
 const discountUpdateSchema = discountCreateSchema.partial();
 const contactSchema = z.object({ message: z.string().min(5).max(2000) });
 
-// ---- discount helpers ----
-const applicableDiscounts = (planId: string) =>
-  discounts.filter((d) => d.active && ((d.conditions?.planIds || []).length ? d.conditions.planIds.includes(planId) : true));
+// auth
+app.post("/v1/auth/signup", wrap((req, res) => {
+  const p = signupSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  if (users.has(p.data.email)) return res.status(400).json(err("USER_EXISTS","Email already registered"));
+  const u = { id: uuid(), email: p.data.email, name: p.data.name || null, phone: p.data.phone || null, createdAt: new Date().toISOString() };
+  users.set(u.email, u);
+  res.status(201).json({ message: "Signup successful", user: u });
+}));
+app.post("/v1/auth/login", wrap((req, res) => {
+  const p = loginSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const u = users.get(p.data.email);
+  if (!u) return res.status(404).json(err("NOT_FOUND","User not found"));
+  res.json({ message: "Login ok", user: u });
+}));
 
-const applyDiscounts = (priceMinor: number, ds: any[]) =>
-  ds.reduce((acc, d) => (d.type === "PERCENT" ? Math.max(0, Math.round((acc * (100 - d.value)) / 100)) : Math.max(0, acc - d.value)), priceMinor);
+// plans
+app.get("/v1/plans", wrap((_req, res) => {
+  const data = Array.from(plans.values())
+    .filter(p => p.status === "ACTIVE")
+    .sort((a,b)=>a.priceMinor-b.priceMinor)
+    .map(p => ({ ...p, price: { amount: p.priceMinor, currency: p.currency, display: money(p.priceMinor, p.currency) }}));
+  res.json({ data });
+}));
+app.post("/v1/plans", requireAdmin, wrap((req, res) => {
+  const p = createPlanSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const id = p.data.id || uuid();
+  if (plans.has(id)) return res.status(400).json(err("PLAN_EXISTS","Plan ID already exists"));
+  const plan = { ...p.data, id };
+  plans.set(id, plan);
+  res.status(201).json({ plan });
+}));
+app.patch("/v1/plans/:id", requireAdmin, wrap((req, res) => {
+  const { id } = req.params;
+  if (!plans.has(id)) return res.status(404).json(err("NOT_FOUND","Plan not found"));
+  const p = updatePlanSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const merged = { ...plans.get(id), ...p.data };
+  plans.set(id, merged);
+  res.json({ plan: merged });
+}));
+app.delete("/v1/plans/:id", requireAdmin, wrap((req, res) => {
+  const { id } = req.params;
+  if (!plans.has(id)) return res.status(404).json(err("NOT_FOUND","Plan not found"));
+  plans.delete(id);
+  res.json({ message: "Deleted" });
+}));
 
-// ---- auth ----
-app.post(
-  "/v1/auth/signup",
-  wrap((req: express.Request, res: express.Response) => {
-    const p = signupSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    if (users.has(p.data.email)) return res.status(400).json(err("USER_EXISTS", "Email already registered"));
-    const u = { id: uuid(), email: p.data.email, name: p.data.name || null, phone: p.data.phone || null, createdAt: new Date().toISOString() };
-    users.set(u.email, u);
-    res.status(201).json({ message: "Signup successful", user: u });
-  })
-);
-
-app.post(
-  "/v1/auth/login",
-  wrap((req: express.Request, res: express.Response) => {
-    const p = loginSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const u = users.get(p.data.email);
-    if (!u) return res.status(404).json(err("NOT_FOUND", "User not found"));
-    res.json({ message: "Login ok", user: u });
-  })
-);
-
-// ---- plans ----
-app.get(
-  "/v1/plans",
-  wrap((_req: express.Request, res: express.Response) => {
-    const data = Array.from(plans.values())
-      .filter((p) => p.status === "ACTIVE")
-      .sort((a, b) => a.priceMinor - b.priceMinor)
-      .map((p) => {
-        const ds = applicableDiscounts(p.id);
-        const final = applyDiscounts(p.priceMinor, ds);
-        return {
-          ...p,
-          price: { amount: p.priceMinor, currency: p.currency, display: money(p.priceMinor, p.currency) },
-          bestOffer: ds.length ? { finalMinor: final, finalDisplay: money(final, p.currency), discounts: ds.map((d) => d.name) } : null,
-        };
-      });
-    res.json({ data });
-  })
-);
-
-app.post(
-  "/v1/plans",
-  requireAdmin,
-  wrap((req: express.Request, res: express.Response) => {
-    const p = createPlanSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const id = p.data.id || uuid();
-    if (plans.has(id)) return res.status(400).json(err("PLAN_EXISTS", "Plan ID already exists"));
-    const plan = { ...p.data, id };
-    plans.set(id, plan);
-    res.status(201).json({ plan });
-  })
-);
-
-app.patch(
-  "/v1/plans/:id",
-  requireAdmin,
-  wrap((req: express.Request, res: express.Response) => {
-    const { id } = req.params;
-    if (!plans.has(id)) return res.status(404).json(err("NOT_FOUND", "Plan not found"));
-    const p = updatePlanSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const merged = { ...plans.get(id), ...p.data };
-    plans.set(id, merged);
-    res.json({ plan: merged });
-  })
-);
-
-app.delete(
-  "/v1/plans/:id",
-  requireAdmin,
-  wrap((req: express.Request, res: express.Response) => {
-    const { id } = req.params;
-    if (!plans.has(id)) return res.status(404).json(err("NOT_FOUND", "Plan not found"));
-    plans.delete(id);
-    res.json({ message: "Deleted" });
-  })
-);
-
-// ---- discounts ----
+// discounts
 app.get("/v1/discounts", requireAdmin, wrap((_req, res) => res.json({ data: discounts })));
+app.post("/v1/discounts", requireAdmin, wrap((req, res) => {
+  const p = discountCreateSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const d = { id: uuid(), ...p.data }; discounts.push(d);
+  res.status(201).json({ discount: d });
+}));
+app.patch("/v1/discounts/:id", requireAdmin, wrap((req, res) => {
+  const i = discounts.findIndex(d => d.id === req.params.id);
+  if (i === -1) return res.status(404).json(err("NOT_FOUND","Discount not found"));
+  const p = discountUpdateSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  discounts[i] = { ...discounts[i], ...p.data };
+  res.json({ discount: discounts[i] });
+}));
 
-app.post(
-  "/v1/discounts",
-  requireAdmin,
-  wrap((req: express.Request, res: express.Response) => {
-    const p = discountCreateSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const d = { id: uuid(), ...p.data };
-    discounts.push(d);
-    res.status(201).json({ discount: d });
-  })
-);
+// subs
+const applicableDiscounts = (planId) => discounts.filter(d => d.active && ((d.conditions?.planIds||[]).length ? d.conditions.planIds.includes(planId) : true));
+const applyDiscounts = (priceMinor, ds) => ds.reduce((acc, d) => d.type==="PERCENT" ? Math.max(0, Math.round(acc*(100-d.value)/100)) : Math.max(0, acc-d.value), priceMinor);
 
-app.patch(
-  "/v1/discounts/:id",
-  requireAdmin,
-  wrap((req: express.Request, res: express.Response) => {
-    const i = discounts.findIndex((d) => d.id === req.params.id);
-    if (i === -1) return res.status(404).json(err("NOT_FOUND", "Discount not found"));
-    const p = discountUpdateSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    discounts[i] = { ...discounts[i], ...p.data };
-    res.json({ discount: discounts[i] });
-  })
-);
-
-// ---- subscriptions ----
-app.get(
-  "/v1/subscriptions",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const mine = Array.from(subs.values()).filter((s) => s.user_id === req.user.id);
-    const data = mine.map((s) => {
-      const p = plans.get(s.plan_id);
-      return { ...s, plan: { ...p, price: { amount: p.priceMinor, currency: p.currency, display: money(p.priceMinor, p.currency) } } };
-    });
-    res.json({ data });
-  })
-);
-
-app.get(
-  "/v1/subscriptions/active",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const s = Array.from(subs.values()).find((v) => v.user_id === req.user.id && v.status === "ACTIVE");
-    if (!s) return res.json({ message: "No active subscriptions" });
+app.get("/v1/subscriptions", loadUser, wrap((req, res) => {
+  const mine = Array.from(subs.values()).filter(s => s.user_id === req.user.id);
+  const data = mine.map(s => {
     const p = plans.get(s.plan_id);
-    res.json({ data: { ...s, plan: { ...p, price: { amount: p.priceMinor, currency: p.currency, display: money(p.priceMinor, p.currency) } } } });
-  })
-);
-
-// *** Expanded recommendations ***
-app.get(
-  "/v1/subscriptions/recommendations",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const active = Array.from(subs.values()).find((v) => v.user_id === req.user.id && v.status === "ACTIVE");
-    const livePlans = Array.from(plans.values())
-      .filter((p) => p.status === "ACTIVE")
-      .sort((a, b) => a.quotaGb - b.quotaGb);
-
-    const out: any[] = [];
-
-    if (!active) {
-      // New user: show entry plan + best discounted plan if different
-      const entry = livePlans[0];
-      const entryDs = applicableDiscounts(entry.id);
-      const entryFinal = applyDiscounts(entry.priceMinor, entryDs);
-      out.push({
-        type: "starter",
-        planId: entry.id,
-        explanation: "Best starter for new users",
-        priceMinor: entry.priceMinor,
-        priceDisplay: money(entry.priceMinor, entry.currency),
-        discounted: entryDs.length
-          ? { finalMinor: entryFinal, finalDisplay: money(entryFinal, entry.currency), discounts: entryDs.map((d) => d.name) }
-          : null,
-      });
-
-      // if any other plan becomes cheaper due to discounts, surface it
-      const discountedCandidates = livePlans
-        .map((p) => {
-          const ds = applicableDiscounts(p.id);
-          const final = applyDiscounts(p.priceMinor, ds);
-          return { p, ds, final };
-        })
-        .filter((x) => x.final < entryFinal);
-
-      if (discountedCandidates.length) {
-        const best = discountedCandidates.sort((a, b) => a.final - b.final)[0];
-        out.push({
-          type: "discounted_alternative",
-          planId: best.p.id,
-          explanation: "Limited-time offer makes this plan cheaper than the starter.",
-          priceMinor: best.p.priceMinor,
-          priceDisplay: money(best.p.priceMinor, best.p.currency),
-          discounted: { finalMinor: best.final, finalDisplay: money(best.final, best.p.currency), discounts: best.ds.map((d) => d.name) },
-        });
-      }
-
-      return res.json({ data: out });
-    }
-
-    // Active subscriber: compute usage
+    return { ...s, plan: { ...p, price: { amount: p.priceMinor, currency: p.currency, display: money(p.priceMinor, p.currency) } } };
+  });
+  res.json({ data });
+}));
+app.get("/v1/subscriptions/active", loadUser, wrap((req, res) => {
+  const s = Array.from(subs.values()).find(v => v.user_id === req.user.id && v.status === "ACTIVE");
+  if (!s) return res.json({ message: "No active subscriptions" });
+  const p = plans.get(s.plan_id);
+  res.json({ data: { ...s, plan: { ...p, price: { amount: p.priceMinor, currency: p.currency, display: money(p.priceMinor, p.currency) } } } });
+}));
+app.get("/v1/subscriptions/recommendations", loadUser, wrap((req, res) => {
+  const active = Array.from(subs.values()).find(v => v.user_id === req.user.id && v.status === "ACTIVE");
+  const livePlans = Array.from(plans.values()).filter(p => p.status === "ACTIVE").sort((a,b)=>a.quotaGb-b.quotaGb);
+  const out = [];
+  if (!active) { out.push({ planId: livePlans[0].id, explanation: "Best starter based on new users" }); }
+  else {
     const last = (usage.get(active.id) || []).slice(-1)[0];
-    const currentPlan = plans.get(active.plan_id);
-    const usedPct = last && currentPlan ? Math.min(100, Math.max(0, (last.usedGb / currentPlan.quotaGb) * 100)) : 0;
+    const usedPct = last ? (last.usedGb / plans.get(active.plan_id).quotaGb) * 100 : 0;
+    const better = livePlans.find(p => p.quotaGb > plans.get(active.plan_id).quotaGb);
+    if (usedPct > 80 && better) out.push({ planId: better.id, explanation: `You used ~${usedPct.toFixed(0)}% of quota. Consider a higher plan.` });
+  }
+  res.json({ data: out });
+}));
+app.post("/v1/subscriptions", loadUser, wrap((req, res) => {
+  const p = subscribeSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const plan = plans.get(p.data.planId);
+  if (!plan) return res.status(404).json(err("PLAN_NOT_FOUND","Plan not found"));
+  for (const s of subs.values()) if (s.user_id === req.user.id && s.status === "ACTIVE") { s.status="CANCELLED"; s.cancelAt=new Date().toISOString(); }
+  const s = { id: uuid(), user_id: req.user.id, plan_id: plan.id, status:"ACTIVE", autoRenew: !!p.data.autoRenew, startAt:new Date().toISOString(), cancelAt:null };
+  subs.set(s.id, s);
+  const ds = applicableDiscounts(plan.id);
+  const final = applyDiscounts(plan.priceMinor, ds);
+  notifications.push({ id: uuid(), userId: req.user.id, type:"subscription.updated", payload:{ subscriptionId:s.id, action:"SUBSCRIBE", priceAfterDiscount: final }, status:"queued", createdAt:new Date().toISOString() });
+  res.status(201).json({ message:"Subscribed successfully", subscription:s, priceAfterDiscountMinor: final });
+}));
+app.patch("/v1/subscriptions/:id", loadUser, wrap((req, res) => {
+  const p = changeSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const s = subs.get(req.params.id);
+  if (!s || s.user_id !== req.user.id) return res.status(404).json(err("NOT_FOUND","Subscription not found"));
+  if (p.data.action === "cancel") { s.status="CANCELLED"; s.cancelAt=new Date().toISOString(); return res.json({ message:"Cancelled", subscription:s }); }
+  if (p.data.action === "renew")  { s.status="ACTIVE"; s.cancelAt=null; return res.json({ message:"Renewed", subscription:s }); }
+  if ((p.data.action === "upgrade" || p.data.action === "downgrade")) {
+    const np = plans.get(p.data.toPlanId || "");
+    if (!np) return res.status(404).json(err("PLAN_NOT_FOUND","toPlanId invalid"));
+    s.plan_id = np.id; return res.json({ message:"Changed", subscription:s });
+  }
+  res.status(400).json(err("BAD_REQUEST","Unknown action"));
+}));
 
-    const higher = livePlans.find((p) => p.quotaGb > currentPlan.quotaGb);
-    const lower = [...livePlans].reverse().find((p) => p.quotaGb < currentPlan.quotaGb);
+// usage
+app.get("/v1/usage/current", loadUser, wrap((req, res) => {
+  const active = Array.from(subs.values()).find(v => v.user_id === req.user.id && v.status === "ACTIVE");
+  if (!active) return res.json({ message: "No active subscription" });
+  const rec = (usage.get(active.id) || []).slice(-1)[0] || { usedGb: 0, periodStart: null, periodEnd: null };
+  res.json({ data: rec });
+}));
 
-    // Upgrade if heavy usage
-    if (usedPct > 80 && higher) {
-      const ds = applicableDiscounts(higher.id);
-      const final = applyDiscounts(higher.priceMinor, ds);
-      out.push({
-        type: "upgrade",
-        planId: higher.id,
-        explanation: `You used ~${usedPct.toFixed(0)}% of your quota. Consider a higher plan for fewer slowdowns.`,
-        delta: {
-          speedMbps: { from: currentPlan.speedMbps, to: higher.speedMbps },
-          quotaGb: { from: currentPlan.quotaGb, to: higher.quotaGb },
-          priceMinor: { from: currentPlan.priceMinor, to: higher.priceMinor, displayFrom: money(currentPlan.priceMinor), displayTo: money(higher.priceMinor) },
-        },
-        discounted: ds.length ? { finalMinor: final, finalDisplay: money(final, higher.currency), discounts: ds.map((d) => d.name) } : null,
-      });
-    }
+// analytics (admin)
+app.get("/v1/analytics/top-plans", (req, res, next) => requireAdmin(req, res, next), wrap((_req, res) => {
+  const counts = {}; for (const s of subs.values()) counts[s.plan_id] = (counts[s.plan_id] || 0) + 1;
+  const data = Array.from(plans.values()).map(p => ({ planId:p.id, name:p.name, count: counts[p.id] || 0 })).sort((a,b)=>b.count-a.count);
+  res.json({ data });
+}));
 
-    // Downgrade if very light usage
-    if (usedPct > 0 && usedPct < 30 && lower) {
-      const ds = applicableDiscounts(lower.id);
-      const final = applyDiscounts(lower.priceMinor, ds);
-      out.push({
-        type: "downgrade",
-        planId: lower.id,
-        explanation: `You're using only ~${usedPct.toFixed(0)}% of your quota. Save money with a lower plan.`,
-        delta: {
-          speedMbps: { from: currentPlan.speedMbps, to: lower.speedMbps },
-          quotaGb: { from: currentPlan.quotaGb, to: lower.quotaGb },
-          priceMinor: { from: currentPlan.priceMinor, to: lower.priceMinor, displayFrom: money(currentPlan.priceMinor), displayTo: money(lower.priceMinor) },
-        },
-        discounted: ds.length ? { finalMinor: final, finalDisplay: money(final, lower.currency), discounts: ds.map((d) => d.name) } : null,
-      });
-    }
-
-    // Discounted lateral move (same or better quota but cheaper after discount)
-    const lateral = livePlans
-      .filter((p) => p.id !== currentPlan.id && p.quotaGb >= currentPlan.quotaGb)
-      .map((p) => {
-        const ds = applicableDiscounts(p.id);
-        const final = applyDiscounts(p.priceMinor, ds);
-        return { p, ds, final };
-      })
-      .filter((x) => x.final < currentPlan.priceMinor)
-      .sort((a, b) => a.final - b.final)[0];
-
-    if (lateral) {
-      out.push({
-        type: "switch_discounted",
-        planId: lateral.p.id,
-        explanation: "Similar or better plan is currently cheaper due to discounts.",
-        priceMinor: lateral.p.priceMinor,
-        priceDisplay: money(lateral.p.priceMinor, lateral.p.currency),
-        discounted: { finalMinor: lateral.final, finalDisplay: money(lateral.final, lateral.p.currency), discounts: lateral.ds.map((d) => d.name) },
-      });
-    }
-
-    if (!out.length) {
-      out.push({ type: "stay", planId: currentPlan.id, explanation: "Your current plan fits your usage. No change needed." });
-    }
-
-    res.json({ data: out });
-  })
-);
-
-app.post(
-  "/v1/subscriptions",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const p = subscribeSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const plan = plans.get(p.data.planId);
-    if (!plan) return res.status(404).json(err("PLAN_NOT_FOUND", "Plan not found"));
-
-    // cancel previous active
-    for (const s of subs.values()) {
-      if (s.user_id === req.user.id && s.status === "ACTIVE") {
-        s.status = "CANCELLED";
-        s.cancelAt = new Date().toISOString();
-      }
-    }
-
-    const s = { id: uuid(), user_id: req.user.id, plan_id: plan.id, status: "ACTIVE", autoRenew: !!p.data.autoRenew, startAt: new Date().toISOString(), cancelAt: null };
-    subs.set(s.id, s);
-
-    const ds = applicableDiscounts(plan.id);
-    const final = applyDiscounts(plan.priceMinor, ds);
-    notifications.push({
-      id: uuid(),
-      userId: req.user.id,
-      type: "subscription.updated",
-      payload: { subscriptionId: s.id, action: "SUBSCRIBE", priceAfterDiscount: final },
-      status: "queued",
-      createdAt: new Date().toISOString(),
-    });
-
-    res.status(201).json({ message: "Subscribed successfully", subscription: s, priceAfterDiscountMinor: final });
-  })
-);
-
-app.patch(
-  "/v1/subscriptions/:id",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const p = changeSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const s = subs.get(req.params.id);
-    if (!s || s.user_id !== req.user.id) return res.status(404).json(err("NOT_FOUND", "Subscription not found"));
-
-    if (p.data.action === "cancel") {
-      s.status = "CANCELLED";
-      s.cancelAt = new Date().toISOString();
-      return res.json({ message: "Cancelled", subscription: s });
-    }
-    if (p.data.action === "renew") {
-      s.status = "ACTIVE";
-      s.cancelAt = null;
-      return res.json({ message: "Renewed", subscription: s });
-    }
-    if (p.data.action === "upgrade" || p.data.action === "downgrade") {
-      const np = plans.get(p.data.toPlanId || "");
-      if (!np) return res.status(404).json(err("PLAN_NOT_FOUND", "toPlanId invalid"));
-      s.plan_id = np.id;
-      return res.json({ message: "Changed", subscription: s });
-    }
-
-    res.status(400).json(err("BAD_REQUEST", "Unknown action"));
-  })
-);
-
-// ---- usage ----
-app.get(
-  "/v1/usage/current",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const active = Array.from(subs.values()).find((v) => v.user_id === req.user.id && v.status === "ACTIVE");
-    if (!active) return res.json({ message: "No active subscription" });
-    const rec = (usage.get(active.id) || []).slice(-1)[0] || { usedGb: 0, periodStart: null, periodEnd: null };
-    res.json({ data: rec });
-  })
-);
-
-// ---- analytics (admin) ----
-app.get(
-  "/v1/analytics/top-plans",
-  (req, res, next) => requireAdmin(req, res, next),
-  wrap((_req: express.Request, res: express.Response) => {
-    const counts: Record<string, number> = {};
-    for (const s of subs.values()) counts[s.plan_id] = (counts[s.plan_id] || 0) + 1;
-    const data = Array.from(plans.values())
-      .map((p) => ({ planId: p.id, name: p.name, count: counts[p.id] || 0 }))
-      .sort((a, b) => b.count - a.count);
-    res.json({ data });
-  })
-);
-
-// ---- contact ----
-app.post(
-  "/v1/contact-us",
-  loadUser,
-  wrap((req: any, res: express.Response) => {
-    const p = contactSchema.safeParse(req.body);
-    if (!p.success) return res.status(400).json(err("BAD_REQUEST", "Invalid payload", p.error.message));
-    const t = { id: uuid(), userId: req.user.id, message: p.data.message, status: "received", createdAt: new Date().toISOString() };
-    tickets.push(t);
-    res.status(201).json({ message: "We received your query", ticket: t });
-  })
-);
-
-// ---- root ----
+// contact
+app.post("/v1/contact-us", loadUser, wrap((req, res) => {
+  const p = z.object({ message: z.string().min(5).max(2000) }).safeParse(req.body);
+  if (!p.success) return res.status(400).json(err("BAD_REQUEST","Invalid payload", p.error.message));
+  const t = { id: uuid(), userId: req.user.id, message: p.data.message, status:"received", createdAt:new Date().toISOString() };
+  tickets.push(t); res.status(201).json({ message:"We received your query", ticket: t });
+}));
 app.get("/", (_req, res) => {
   res.json({
-    name: "SMS backend (in-memory + optional Mongo)",
+    name: "SMS backend (in-memory)",
     docs: {
       health: "/health",
       plans: "/v1/plans",
       activeSubscription: "/v1/subscriptions/active (needs x-user-email)",
-      recommend: "/v1/subscriptions/recommendations (needs x-user-email)",
-    },
+      recommend: "/v1/subscriptions/recommendations (needs x-user-email)"
+    }
   });
 });
 
-// ---- 404 ----
-app.use((_req, res) => res.status(404).json(err("NOT_FOUND", "Route not found")));
 
-// ---- start ----
-(async () => {
-  await connectDB();
-  app.listen(PORT, () => console.log(`SMS running on http://localhost:${PORT}`));
-})();
+// 404
+app.use((_req, res) => res.status(404).json(err("NOT_FOUND","Route not found")));
+
+app.listen(PORT, () => console.log(`SMS (in-memory) running on http://localhost:${PORT}`));
