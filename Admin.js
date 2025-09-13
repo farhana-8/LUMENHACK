@@ -7,6 +7,7 @@ const AdminSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     phone: { type: String, required: true },
+    department: { type: String, required: true }
 });
 
 AdminSchema.pre('save', async function(next) {
