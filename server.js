@@ -2,6 +2,21 @@ import express from "express";
 import { z } from "zod";
 import dotenv from "dotenv";
 import { v4 as uuid } from "uuid";
+import mongoose from "mongoose";
+
+const connectDB = async () => {
+  try {
+    await mongoose.connect("mongodb+srv://TeamLumen:Lumen12345@cluster0.02bnupq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0", {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("MongoDB Atlas Connected...");
+  } catch (err) {
+    console.error("MongoDB Connection Failed:", err.message);
+    process.exit(1);
+  }
+};
+connectDB();
 
 dotenv.config();
 const PORT = process.env.PORT || 8000;
@@ -229,3 +244,4 @@ app.get("/", (_req, res) => {
 app.use((_req, res) => res.status(404).json(err("NOT_FOUND","Route not found")));
 
 app.listen(PORT, () => console.log(`SMS (in-memory) running on http://localhost:${PORT}`));
+
