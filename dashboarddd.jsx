@@ -1,29 +1,55 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import PlanList from "../components/PlanList";
+import PlanList from "../components/planlist";
+import axios from "axios";
 
 export default function Dashboard() {
   const navigate = useNavigate();
 
-  // Sample plans
-  const [plans, setPlans] = useState([
-    { id: 1, name: "Basic", price: 10, type: "Monthly" },
-    { id: 2, name: "Pro", price: 100, type: "Yearly" },
-    { id: 3, name: "Enterprise", price: 500, type: "Yearly" },
-  ]);
+  const [plans, setPlans] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Sample users with their subscribed plan id
-  const [users, setUsers] = useState([
-    { id: 1, name: "John Doe", email: "john@example.com", planId: 1 },
-    { id: 2, name: "Jane Smith", email: "jane@example.com", planId: 2 },
-    { id: 3, name: "Alice Brown", email: "alice@example.com", planId: 1 },
-  ]);
+  // Fetch plans and users from backend
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [plansRes, usersRes] = await Promise.all([
+          axios.get("/api/plans"),  // Replace with your API endpoint
+          axios.get("/api/users"),  // Replace with your API endpoint
+        ]);
+        setPlans(plansRes.data);
+        setUsers(usersRes.data);
+        setLoading(false);
+      } catch (err) {
+        console.error(err);
+        setError("Failed to load data.");
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  const handleDeleteUser = async (id) => {
+    try {
+      await axios.delete(`/api/users/${id}`); // Backend DELETE endpoint
+      setUsers(users.filter((user) => user.id !== id));
+    } catch (err) {
+      console.error(err);
+      setError("Failed to delete user.");
+    }
+  };
+
+  if (loading) return <p className="p-6">Loading...</p>;
+  if (error) return <p className="p-6 text-red-500">{error}</p>;
 
   return (
-    <div>
+    <div className="p-6">
       <h1 className="text-2xl font-bold mb-4">Admin Dashboard</h1>
 
-      {/* Button to manage plans */}
+      {/* Button to navigate to Plans page */}
       <button
         onClick={() => navigate("/plans")}
         className="mb-6 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
@@ -31,9 +57,11 @@ export default function Dashboard() {
         Add / Manage Plans
       </button>
 
+      {/* Plans Table */}
       <h2 className="text-xl font-semibold mb-2">Subscription Plans</h2>
       <PlanList plans={plans} setPlans={setPlans} />
 
+      {/* Users Table */}
       <h2 className="text-xl font-semibold mt-6 mb-2">Users and Their Plans</h2>
       <table className="w-full border">
         <thead>
@@ -41,6 +69,7 @@ export default function Dashboard() {
             <th className="border p-2">Name</th>
             <th className="border p-2">Email</th>
             <th className="border p-2">Subscribed Plan</th>
+            <th className="border p-2">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -51,6 +80,14 @@ export default function Dashboard() {
                 <td className="border p-2">{user.name}</td>
                 <td className="border p-2">{user.email}</td>
                 <td className="border p-2">{userPlan ? userPlan.name : "None"}</td>
+                <td className="border p-2">
+                  <button
+                    onClick={() => handleDeleteUser(user.id)}
+                    className="bg-red-500 text-white px-2 py-1 rounded"
+                  >
+                    Delete
+                  </button>
+                </td>
               </tr>
             );
           })}
@@ -59,3 +96,5 @@ export default function Dashboard() {
     </div>
   );
 }
+
+
